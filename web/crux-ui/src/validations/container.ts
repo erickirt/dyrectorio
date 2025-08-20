@@ -1,4 +1,4 @@
-import { UID_MAX, UID_MIN } from '@app/const'
+import { PORT_MAX, PORT_MIN, UID_MAX, UID_MIN } from '@app/const'
 import {
   CONTAINER_DEPLOYMENT_STRATEGY_VALUES,
   CONTAINER_EXPOSE_STRATEGY_VALUES,
@@ -15,6 +15,7 @@ import {
   ContainerPortRange,
   ContainerRestartPolicyType,
   EnvironmentRule,
+  HealthCheckProbe,
   Metrics,
   UniqueKeyValue,
   UniqueSecretKeyValue,
@@ -96,7 +97,7 @@ export const uniqueKeysOnlySchema = yup
     arr ? new Set(arr.map(it => it.key)).size === arr.length : true,
   )
 
-const portNumberBaseRule = yup.number().positive().lessThan(65536)
+const portNumberBaseRule = yup.number().min(PORT_MIN).max(PORT_MAX)
 const portNumberOptionalRule = portNumberBaseRule.nullable()
 const portNumberRule = portNumberBaseRule.nullable().required()
 
@@ -159,17 +160,33 @@ const configContainerRule = yup
   .optional()
   .label('container:common.configContainer')
 
+const healthCheckProbeRule = (probeName: string) =>
+  yup
+    .object()
+    .when({
+      is: (healthCheck: HealthCheckProbe) => healthCheck?.type === 'exec',
+      then: schema =>
+        schema.shape({
+          command: uniqueKeysOnlySchema.required().label('container:common.commands'),
+        }),
+      otherwise: schema =>
+        schema.shape({
+          port: portNumberRule.default(80).label('container:common.port'),
+          path: yup.string().required().label(probeName),
+        }),
+    })
+    .label(probeName)
+
 const healthCheckConfigRule = yup
   .object()
   .shape({
-    port: portNumberRule.nullable().optional().label('container:crane.port'),
-    livenessProbe: yup.string().nullable().optional().label('container:crane.livenessProbe'),
-    readinessProbe: yup.string().nullable().optional().label('container:crane.readinessProbe'),
-    startupProbe: yup.string().nullable().optional().label('container:crane.startupProbe'),
+    liveness: healthCheckProbeRule('container:crane.livenessProbe').nullable().optional(),
+    readiness: healthCheckProbeRule('container:crane.readinessProbe').nullable().optional(),
+    startup: healthCheckProbeRule('container:crane.startupProbe').nullable().optional(),
   })
   .default(null)
-  .optional()
   .nullable()
+  .optional()
   .label('container:crane.healthCheckConfig')
 
 const resourceConfigRule = yup
@@ -599,6 +616,7 @@ const createContainerConfigBaseSchema = (imageLabels: Record<string, string>) =>
     labels: markerRule.label('container:crane.labels'),
     annotations: markerRule.label('container:crane.annotations'),
     metrics: metricsRule,
+    replicas: yup.number().optional().nullable().min(1),
   })
 
 export const createContainerConfigSchema = (imageLabels: Record<string, string>) =>

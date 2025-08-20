@@ -1,4 +1,11 @@
-import { UniqueSecretKeyValue } from '@app/models'
+import {
+  HealthCheckCommandProbe,
+  HealthCheckNetworkProbe,
+  HealthCheckProbe,
+  JsonHealthCheckCommandProbe,
+  JsonHealthCheckProbe,
+  UniqueSecretKeyValue,
+} from '@app/models'
 
 export const wsPatchMatchPorts = (internalPort: string, externalPort?: string) => (payload: any) => {
   const internal = Number.parseInt(internalPort, 10)
@@ -66,6 +73,8 @@ export const wsPatchMatchRouting =
 export const wsPatchMatchContainerName = (name: string) => (payload: any) => payload.config?.name === name
 
 export const wsPatchMatchUser = (user: number) => (payload: any) => payload.config?.user === user
+
+export const wsPatchMatchReplicas = (replicas: number) => (payload: any) => payload.config?.replicas === replicas
 
 export const wsPatchMatchExpose = (expose: string) => (payload: any) => payload.config?.expose === expose
 
@@ -138,14 +147,96 @@ export const wsPatchMatchLoadBalancer = (loadbalancer: boolean) => (payload: any
 export const wsPatchMatchLBAnnotations = (key: string, value: string) => (payload: any) =>
   payload.config?.extraLBAnnotations?.some(it => it.key === key && it.value === value)
 
+const healthCheckProbesAreEqual = (one: HealthCheckProbe, other: HealthCheckProbe): boolean => {
+  if (one === null) {
+    return other === null
+  }
+
+  if (other === null || one.type !== other.type) {
+    return false
+  }
+
+  if (one.type === 'http' || one.type === 'grpc') {
+    other = other as HealthCheckNetworkProbe
+
+    return one.path === other.path && one.port === other.port
+  }
+
+  one = one as HealthCheckCommandProbe
+  other = other as HealthCheckCommandProbe
+
+  const oneCommands = one.command ?? []
+  const otherCommands = other.command ?? []
+
+  if (oneCommands.length !== otherCommands.length) {
+    return false
+  }
+
+  return !oneCommands.find((oneCmd, index) => {
+    const otherCmd = otherCommands[index]
+
+    return oneCmd.key !== otherCmd.key
+  })
+}
+
 export const wsPatchMatchHealthCheck =
-  (port: number, liveness: string, readiness: string, startup: string) => (payload: any) => {
+  (liveness: HealthCheckProbe, readiness: HealthCheckProbe, startup: HealthCheckProbe) => (payload: any) => {
     const hc = payload.config?.healthCheckConfig
+    if (!hc) {
+      return false
+    }
+
     return (
-      hc?.port === port &&
-      hc?.livenessProbe === liveness &&
-      hc?.readinessProbe === readiness &&
-      hc?.startupProbe === startup
+      healthCheckProbesAreEqual(liveness, hc.liveness) &&
+      healthCheckProbesAreEqual(readiness, hc.readiness) &&
+      healthCheckProbesAreEqual(startup, hc.startup)
+    )
+  }
+
+const jsonHealthCheckProbesAreEqual = (json: JsonHealthCheckProbe, config: HealthCheckProbe): boolean => {
+  if (json === null) {
+    return config === null
+  }
+
+  if (config === null || json.type !== config.type) {
+    return false
+  }
+
+  if (json.type === 'http' || json.type === 'grpc') {
+    config = config as HealthCheckNetworkProbe
+
+    return json.path === config.path && json.port === config.port
+  }
+
+  json = json as JsonHealthCheckCommandProbe
+  config = config as HealthCheckCommandProbe
+
+  const jsonCommands = json.command ?? []
+  const configCommands = config.command ?? []
+
+  if (jsonCommands.length !== configCommands.length) {
+    return false
+  }
+
+  return !jsonCommands.find((oneCmd, index) => {
+    const otherCmd = configCommands[index]
+
+    return oneCmd !== otherCmd.key
+  })
+}
+
+export const wsPatchMatchJsonHealthCheck =
+  (liveness: JsonHealthCheckProbe, readiness: JsonHealthCheckProbe, startup: JsonHealthCheckProbe) =>
+  (payload: any) => {
+    const hc = payload.config?.healthCheckConfig
+    if (!hc) {
+      return false
+    }
+
+    return (
+      jsonHealthCheckProbesAreEqual(liveness, hc.liveness) &&
+      jsonHealthCheckProbesAreEqual(readiness, hc.readiness) &&
+      jsonHealthCheckProbesAreEqual(startup, hc.startup)
     )
   }
 

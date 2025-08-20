@@ -8,11 +8,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/docker/docker/api/types/container"
 	validator "github.com/go-playground/validator/v10"
 	"github.com/rs/zerolog/log"
 	"k8s.io/apimachinery/pkg/api/resource"
-
-	"github.com/docker/docker/api/types/container"
 
 	"github.com/dyrector-io/dyrectorio/golang/internal/config"
 	imageHelper "github.com/dyrector-io/dyrectorio/golang/internal/helper/image"
@@ -86,8 +85,19 @@ func (i *InstanceConfig) Strings() []string {
 	return str
 }
 
+type ProbeType string
+
+const (
+	HTTPProbe ProbeType = "http"
+	GRPCProbe ProbeType = "grpc"
+	ExecProbe ProbeType = "exec"
+)
+
 type Probe struct {
-	Path string `json:"path"`
+	Path    string    `json:"path"`
+	Type    ProbeType `json:"type"`
+	Command []string  `json:"command"`
+	Port    uint16    `json:"port"`
 }
 
 type RuntimeConfigType string
@@ -100,7 +110,6 @@ type HealthCheckConfig struct {
 	LivenessProbe  *Probe `json:"livenessProbe"`
 	ReadinessProbe *Probe `json:"readinessProbe"`
 	StartupProbe   *Probe `json:"startupProbe"`
-	Port           uint16 `json:"Port"`
 }
 
 type Resources struct {
@@ -138,7 +147,7 @@ type ExpectedState struct {
 }
 
 type ContainerConfig struct {
-	HealthCheckConfig  HealthCheckConfig           `json:"healthCheck"`
+	HealthCheck        HealthCheckConfig           `json:"healthCheck"`
 	Labels             Markers                     `json:"labels"`
 	Annotations        Markers                     `json:"annotations"`
 	ConfigContainer    *ConfigContainer            `json:"configContainer,omitempty"`
@@ -173,6 +182,7 @@ type ContainerConfig struct {
 	CustomHeaders      []string                    `json:"customHeaders,omitempty"`
 	Mounts             []string                    `json:"mount"`
 	IngressPort        uint16                      `json:"ingressPort"`
+	Replicas           uint8                       `json:"replicas"`
 	Shared             bool                        `json:"shared"`
 	UseLoadBalancer    bool                        `json:"useLoadBalancer"`
 	Expose             bool                        `json:"expose"`

@@ -10,26 +10,21 @@ import (
 
 	"github.com/rs/zerolog/log"
 	"golang.org/x/exp/maps"
+	kappsv1 "k8s.io/api/apps/v1"
 	coreV1 "k8s.io/api/core/v1"
 	resource "k8s.io/apimachinery/pkg/api/resource"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-
-	"github.com/dyrector-io/dyrectorio/golang/internal/util"
-	builder "github.com/dyrector-io/dyrectorio/golang/pkg/builder/container"
-	"github.com/dyrector-io/dyrectorio/golang/pkg/crane/config"
-
+	appsv1 "k8s.io/client-go/applyconfigurations/apps/v1"
+	corev1 "k8s.io/client-go/applyconfigurations/core/v1"
+	metav1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	typedv1 "k8s.io/client-go/kubernetes/typed/apps/v1"
 
 	v1 "github.com/dyrector-io/dyrectorio/golang/api/v1"
-
-	appsv1 "k8s.io/client-go/applyconfigurations/apps/v1"
-
-	kappsv1 "k8s.io/api/apps/v1"
-
-	corev1 "k8s.io/client-go/applyconfigurations/core/v1"
-	metav1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	"github.com/dyrector-io/dyrectorio/golang/internal/util"
+	builder "github.com/dyrector-io/dyrectorio/golang/pkg/builder/container"
+	"github.com/dyrector-io/dyrectorio/golang/pkg/crane/config"
 )
 
 const CraneUpdatedAnnotation = "crane.dyrector.io/restartedAt"
@@ -97,7 +92,7 @@ func (d *Deployment) DeployDeployment(p *DeploymentParams) error {
 	deployment := appsv1.Deployment(name, p.namespace).
 		WithSpec(
 			appsv1.DeploymentSpec().
-				WithReplicas(1).
+				WithReplicas(replicaCountOrDefault(p.containerConfig.Replicas)).
 				WithStrategy(appsv1.DeploymentStrategy().WithType(kappsv1.DeploymentStrategyType(p.containerConfig.DeploymentStrategy))).
 				WithSelector(metav1.LabelSelector().WithMatchLabels(map[string]string{
 					"app": name,
@@ -276,13 +271,18 @@ func (d *Deployment) GetPodDeployment(namespace, name string) (*kappsv1.Deployme
 	return client.AppsV1().Deployments(namespace).Get(d.ctx, owner.Name, metaV1.GetOptions{})
 }
 
+func replicaCountOrDefault(count uint8) int32 {
+	if count == 0 {
+		return 1
+	}
+	return int32(count)
+}
+
 // builds the container using the builder interface, with healthchecks, volumes, configs, ports...
 func buildContainer(p *DeploymentParams,
 	cfg *config.Configuration,
 ) (*corev1.ContainerApplyConfiguration, error) {
-	healthCheckConfig := p.containerConfig.HealthCheckConfig
-	var healthCheckDelay int32 = 30
-	var healthCheckThreshold int32 = 1
+	healthCheckConfig := p.containerConfig.HealthCheck
 
 	var livenessProbe *corev1.ProbeApplyConfiguration
 	var readinessProbe *corev1.ProbeApplyConfiguration
@@ -295,24 +295,15 @@ func buildContainer(p *DeploymentParams,
 
 	// Check all Probes to represented in the deploymentParams or not
 	if healthCheckConfig.LivenessProbe != nil {
-		livenessProbe = corev1.Probe().
-			WithHTTPGet(getProbes(healthCheckConfig.LivenessProbe.Path, healthCheckConfig.Port)).
-			WithInitialDelaySeconds(healthCheckDelay).
-			WithFailureThreshold(healthCheckThreshold)
+		livenessProbe = getProbe(healthCheckConfig.LivenessProbe)
 	}
 
 	if healthCheckConfig.ReadinessProbe != nil {
-		readinessProbe = corev1.Probe().
-			WithHTTPGet(getProbes(healthCheckConfig.ReadinessProbe.Path, healthCheckConfig.Port)).
-			WithInitialDelaySeconds(healthCheckDelay).
-			WithFailureThreshold(healthCheckThreshold)
+		readinessProbe = getProbe(healthCheckConfig.ReadinessProbe)
 	}
 
 	if healthCheckConfig.StartupProbe != nil {
-		startupProbe = corev1.Probe().
-			WithHTTPGet(getProbes(healthCheckConfig.ReadinessProbe.Path, healthCheckConfig.Port)).
-			WithInitialDelaySeconds(healthCheckDelay).
-			WithFailureThreshold(healthCheckThreshold)
+		startupProbe = getProbe(healthCheckConfig.StartupProbe)
 	}
 
 	container := corev1.Container().
@@ -548,10 +539,37 @@ func getEnvConfigMapsAndSecrets(configs, secrets []string) []*corev1.EnvFromSour
 	return envs
 }
 
-func getProbes(path string, port uint16) *corev1.HTTPGetActionApplyConfiguration {
+func getProbe(probe *v1.Probe) *corev1.ProbeApplyConfiguration {
+	var healthCheckDelay int32 = 30
+	var healthCheckThreshold int32 = 2
+
+	probeApplyConfig := corev1.Probe().WithInitialDelaySeconds(healthCheckDelay).
+		WithFailureThreshold(healthCheckThreshold)
+
+	switch probe.Type {
+	case v1.HTTPProbe:
+		probeApplyConfig = probeApplyConfig.WithHTTPGet(getHTTPProbe(probe.Path, probe.Port))
+	case v1.GRPCProbe:
+		probeApplyConfig = probeApplyConfig.WithGRPC(getGRPCProbe(probe.Port, probe.Path))
+	case v1.ExecProbe:
+		probeApplyConfig = probeApplyConfig.WithExec(getExecProbe(probe.Command...))
+	}
+
+	return probeApplyConfig
+}
+
+func getExecProbe(command ...string) *corev1.ExecActionApplyConfiguration {
+	return corev1.ExecAction().WithCommand(command...)
+}
+
+func getGRPCProbe(port uint16, service string) *corev1.GRPCActionApplyConfiguration {
+	return corev1.GRPCAction().WithPort(int32(port)).WithService(service)
+}
+
+func getHTTPProbe(path string, port uint16) *corev1.HTTPGetActionApplyConfiguration {
 	return corev1.HTTPGetAction().
 		WithPath(path).
-		WithPort(intstr.FromInt(int(port))) // exposed port
+		WithPort(intstr.FromInt(int(port)))
 }
 
 func getContainerPorts(portList []builder.PortBinding) []*corev1.ContainerPortApplyConfiguration {

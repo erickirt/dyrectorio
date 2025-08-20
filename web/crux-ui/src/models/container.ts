@@ -89,6 +89,9 @@ export type ContainerConfigExposeStrategy = (typeof CONTAINER_EXPOSE_STRATEGY_VA
 export const CONTAINER_VOLUME_TYPE_VALUES = ['ro', 'rwo', 'rwx', 'mem', 'tmp'] as const
 export type VolumeType = (typeof CONTAINER_VOLUME_TYPE_VALUES)[number]
 
+export const CONTAINER_PROBE_TYPE_VALUES = ['none', 'http', 'grpc', 'exec'] as const
+export type ContainerProbeType = (typeof CONTAINER_PROBE_TYPE_VALUES)[number]
+
 export type ContainerConfigRouting = {
   domain?: string
   path?: string
@@ -128,11 +131,26 @@ export type Log = {
   options: UniqueKeyValue[]
 }
 
+export const HEALTH_CHECK_TYPE_VALUES = ['http', 'grpc', 'exec'] as const
+export type HealthCheckType = (typeof HEALTH_CHECK_TYPE_VALUES)[number]
+
+export type HealthCheckCommandProbe = {
+  type: 'exec'
+  command: UniqueKey[]
+}
+
+export type HealthCheckNetworkProbe = {
+  type: 'http' | 'grpc'
+  port: number
+  path: string
+}
+
+export type HealthCheckProbe = HealthCheckNetworkProbe | HealthCheckCommandProbe
+
 export type ContainerConfigHealthCheck = {
-  port?: number
-  livenessProbe?: string
-  readinessProbe?: string
-  startupProbe?: string
+  liveness?: HealthCheckProbe
+  readiness?: HealthCheckProbe
+  startup?: HealthCheckProbe
 }
 
 export type ContainerConfigResource = {
@@ -242,6 +260,7 @@ export type ContainerConfigData = {
   annotations?: Marker
   labels?: Marker
   metrics?: Metrics
+  replicas?: number
 }
 
 export const COMMON_CONFIG_KEYS = [
@@ -274,6 +293,7 @@ export const CRANE_CONFIG_KEYS = [
   'proxyHeaders',
   'resourceConfig',
   'useLoadBalancer',
+  'replicas',
 ] as const
 
 export const DAGENT_CONFIG_KEYS = [

@@ -18,8 +18,10 @@ import {
   ContainerNetworkMode,
   ContainerRestartPolicyType,
   ContainerVolumeType,
+  HealthCheckProbe,
   Metrics,
   PORT_MAX,
+  PORT_MIN,
   UniqueKeyValue,
 } from './container'
 import { EnvironmentRule } from './image'
@@ -60,10 +62,7 @@ export const uniqueKeysOnlySchema = yup
   .ensure()
   .test('keysAreUnique', 'Keys must be unique', arr => new Set(arr.map(it => it.key)).size === arr.length)
 
-const portNumberBaseRule = yup
-  .number()
-  .positive()
-  .lessThan(PORT_MAX + 1)
+const portNumberBaseRule = yup.number().min(PORT_MIN).max(PORT_MAX)
 const portNumberOptionalRule = portNumberBaseRule.nullable()
 const portNumberRule = portNumberBaseRule.required()
 
@@ -92,11 +91,23 @@ const configContainerRule = yup.object().shape({
   keepFiles: yup.boolean().default(false).required(),
 })
 
+const healthCheckProbeRule = yup.object().when({
+  is: (healthCheck: HealthCheckProbe) => healthCheck?.type === 'exec',
+  then: schema =>
+    schema.shape({
+      command: uniqueKeysOnlySchema.required(),
+    }),
+  otherwise: schema =>
+    schema.shape({
+      port: portNumberRule.default(80),
+      path: yup.string().required(),
+    }),
+})
+
 const healthCheckConfigRule = yup.object().shape({
-  port: portNumberRule.nullable().optional(),
-  livenessProbe: yup.string().nullable().optional(),
-  readinessProbe: yup.string().nullable().optional(),
-  startupProbe: yup.string().nullable().optional(),
+  liveness: healthCheckProbeRule.nullable().optional(),
+  readiness: healthCheckProbeRule.nullable().optional(),
+  startup: healthCheckProbeRule.nullable().optional(),
 })
 
 const resourceConfigRule = yup.object().shape({
@@ -312,6 +323,7 @@ export const concreteContainerConfigSchema = yup.object().shape({
   annotations: markerRule.optional().nullable(),
   labels: markerRule.optional().nullable(),
   metrics: metricsRule.optional().nullable(),
+  replicas: yup.number().optional().nullable().min(1),
 })
 
 // TODO(@robot9706): Fix labels & config bundles conflicting
@@ -481,7 +493,7 @@ const templateRegistrySchema = yup.object().shape({
           namespace: yup.string().required(),
         }),
     })
-    .when(['type'], {
+    .when('type', {
       is: type => type === 'google',
       then: () =>
         yup.object({

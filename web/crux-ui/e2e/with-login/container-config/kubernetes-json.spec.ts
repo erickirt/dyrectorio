@@ -1,4 +1,4 @@
-import { WS_TYPE_PATCH_CONFIG } from '@app/models'
+import { HealthCheckProbe, JsonHealthCheckCommandProbe, WS_TYPE_PATCH_CONFIG } from '@app/models'
 import { expect, Page } from '@playwright/test'
 import { NGINX_TEST_IMAGE_WITH_TAG, TEAM_ROUTES } from 'e2e/utils/common'
 import {
@@ -6,12 +6,13 @@ import {
   wsPatchMatchDeploymentAnnotations,
   wsPatchMatchDeploymentLabel,
   wsPatchMatchDeploymentStrategy,
-  wsPatchMatchHealthCheck,
   wsPatchMatchIngressAnnotations,
   wsPatchMatchIngressLabel,
+  wsPatchMatchJsonHealthCheck,
   wsPatchMatchLBAnnotations,
   wsPatchMatchLoadBalancer,
   wsPatchMatchProxyHeader,
+  wsPatchMatchReplicas,
   wsPatchMatchResourceConfig,
   wsPatchMatchServiceAnnotations,
   wsPatchMatchServiceLabel,
@@ -163,23 +164,33 @@ test.describe('Image kubernetes config from JSON', () => {
     const ws = await sock
     const wsRoute = TEAM_ROUTES.containerConfig.detailsSocket(imageConfigId)
 
-    const port = 12560
-    const liveness = 'test/liveness/'
-    const readiness = 'test/readiness/'
-    const startup = 'test/startup/'
+    const liveness: HealthCheckProbe = {
+      type: 'http',
+      path: 'test/liveness/',
+      port: 8080,
+    }
+    const readiness: HealthCheckProbe = {
+      type: 'grpc',
+      path: 'test/readiness/',
+      port: 5000,
+    }
+    const startup: JsonHealthCheckCommandProbe = {
+      type: 'exec',
+      command: ['test/startup/command/first', 'test/startup/command/second'],
+    }
 
     const jsonEditorButton = await page.waitForSelector('button:has-text("JSON")')
     await jsonEditorButton.click()
 
     const jsonEditor = await page.locator('textarea')
     const json = JSON.parse(await jsonEditor.inputValue())
-    json.healthCheckConfig = { port, livenessProbe: liveness, readinessProbe: readiness, startupProbe: startup }
+    json.healthCheckConfig = { liveness, readiness, startup }
 
     const wsSent = wsPatchSent(
       ws,
       wsRoute,
       WS_TYPE_PATCH_CONFIG,
-      wsPatchMatchHealthCheck(port, liveness, readiness, startup),
+      wsPatchMatchJsonHealthCheck(liveness, readiness, startup),
     )
     await jsonEditor.fill(JSON.stringify(json))
     await wsSent
@@ -187,10 +198,16 @@ test.describe('Image kubernetes config from JSON', () => {
     await page.reload()
 
     const hcConf = page.locator('div:has(label:has-text("HEALTH CHECK CONFIG"))')
-    await expect(hcConf.locator('input[placeholder="Port"]')).toHaveValue(port.toString())
-    await expect(hcConf.getByLabel('Liveness probe')).toHaveValue(liveness)
-    await expect(hcConf.getByLabel('Readiness probe')).toHaveValue(readiness)
-    await expect(hcConf.getByLabel('Startup probe')).toHaveValue(startup)
+    await expect(hcConf.locator('[name="healthCheckConfig.crane.livenessProbe.port"]')).toHaveValue(
+      liveness.port.toString(),
+    )
+    await expect(hcConf.locator('[name="healthCheckConfig.crane.livenessProbe.path"]')).toHaveValue(liveness.path)
+    await expect(hcConf.locator('[name="healthCheckConfig.crane.readinessProbe.port"]')).toHaveValue(
+      readiness.port.toString(),
+    )
+    await expect(hcConf.locator('[name="healthCheckConfig.crane.readinessProbe.path"]')).toHaveValue(readiness.path)
+    await expect(hcConf.locator('input[placeholder="Command"] >> visible=true').nth(0)).toHaveValue(startup.command[0])
+    await expect(hcConf.locator('input[placeholder="Command"] >> visible=true').nth(1)).toHaveValue(startup.command[1])
   })
 
   test('Resource config should be saved', async ({ page }) => {
@@ -324,5 +341,32 @@ test.describe('Image kubernetes config from JSON', () => {
     await expect(serviceDiv.locator('input[placeholder="Value"]').first()).toHaveValue(value)
     await expect(ingressDiv.locator('input[placeholder="Key"]').first()).toHaveValue(key)
     await expect(ingressDiv.locator('input[placeholder="Value"]').first()).toHaveValue(value)
+  })
+
+  test('Replicas should be saved', async ({ page }) => {
+    const { imageConfigId } = await setup(page, 'replicas-json', '1.0.0', NGINX_TEST_IMAGE_WITH_TAG)
+
+    const sock = waitSocketRef(page)
+    await page.goto(TEAM_ROUTES.containerConfig.details(imageConfigId))
+    await page.waitForSelector('h2:text-is("Image config")')
+    const ws = await sock
+    const wsRoute = TEAM_ROUTES.containerConfig.detailsSocket(imageConfigId)
+
+    const replicas = 3
+
+    const jsonEditorButton = await page.waitForSelector('button:has-text("JSON")')
+    await jsonEditorButton.click()
+
+    const jsonEditor = await page.locator('textarea')
+    const json = JSON.parse(await jsonEditor.inputValue())
+    json.replicas = replicas
+
+    const wsSent = wsPatchSent(ws, wsRoute, WS_TYPE_PATCH_CONFIG, wsPatchMatchReplicas(replicas))
+    await jsonEditor.fill(JSON.stringify(json))
+    await wsSent
+
+    await page.reload()
+
+    await expect(page.locator('input:right-of(label:has-text("REPLICAS"))')).toHaveValue(replicas.toString())
   })
 })

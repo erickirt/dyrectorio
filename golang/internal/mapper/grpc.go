@@ -7,23 +7,21 @@ import (
 	"time"
 
 	"github.com/AlekSi/pointer"
+	dockerTypes "github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
+	"github.com/iancoleman/strcase"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 
 	v1 "github.com/dyrector-io/dyrectorio/golang/api/v1"
 	"github.com/dyrector-io/dyrectorio/golang/internal/config"
 	imageHelper "github.com/dyrector-io/dyrectorio/golang/internal/helper/image"
 	"github.com/dyrector-io/dyrectorio/golang/internal/util"
-
 	builder "github.com/dyrector-io/dyrectorio/golang/pkg/builder/container"
 	"github.com/dyrector-io/dyrectorio/protobuf/go/agent"
 	"github.com/dyrector-io/dyrectorio/protobuf/go/common"
-
-	dockerTypes "github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/iancoleman/strcase"
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 )
 
 var ErrNoTargetContainerOrPrefix = errors.New("no target container or prefix")
@@ -33,8 +31,8 @@ func MapDeployImage(prefix string, req *agent.DeployWorkloadRequest, appConfig *
 		RequestID: req.Id,
 		InstanceConfig: v1.InstanceConfig{
 			UseSharedEnvs:     false,
-			Environment:       map[string]string{},
-			SharedEnvironment: map[string]string{},
+			Environment:       nil,
+			SharedEnvironment: nil,
 			ContainerPreName:  prefix,
 		},
 		ContainerConfig: mapContainerConfig(prefix, req),
@@ -184,7 +182,7 @@ func mapCraneConfig(crane *agent.CraneContainerConfig, containerConfig *v1.Conta
 	}
 
 	if crane.HealthCheckConfig != nil {
-		containerConfig.HealthCheckConfig = mapHealthCheckConfig(crane.HealthCheckConfig)
+		containerConfig.HealthCheck = mapHealthCheckConfig(crane.HealthCheckConfig)
 	}
 
 	if crane.ResourceConfig != nil {
@@ -216,6 +214,10 @@ func mapCraneConfig(crane *agent.CraneContainerConfig, containerConfig *v1.Conta
 			Path: crane.Metrics.Path,
 			Port: int(crane.Metrics.Port),
 		}
+	}
+
+	if count := pointer.GetInt32(crane.ReplicaCount); count != 0 {
+		containerConfig.Replicas = uint8(count) //#nosec G115
 	}
 }
 
@@ -269,23 +271,36 @@ func mapResourceConfig(resourceConfig *common.ResourceConfig) v1.ResourceConfig 
 func mapHealthCheckConfig(healthCheckConfig *common.HealthCheckConfig) v1.HealthCheckConfig {
 	mappedConfig := v1.HealthCheckConfig{}
 
-	if healthCheckConfig.Port != nil {
-		mappedConfig.Port = uint16(*healthCheckConfig.Port) //#nosec G115
-	}
-
 	if healthCheckConfig.LivenessProbe != nil {
-		mappedConfig.LivenessProbe = &v1.Probe{Path: *healthCheckConfig.LivenessProbe}
+		mappedConfig.LivenessProbe = mapProbe(healthCheckConfig.LivenessProbe)
 	}
 
 	if healthCheckConfig.ReadinessProbe != nil {
-		mappedConfig.ReadinessProbe = &v1.Probe{Path: *healthCheckConfig.ReadinessProbe}
+		mappedConfig.ReadinessProbe = mapProbe(healthCheckConfig.ReadinessProbe)
 	}
 
 	if healthCheckConfig.StartupProbe != nil {
-		mappedConfig.StartupProbe = &v1.Probe{Path: *healthCheckConfig.StartupProbe}
+		mappedConfig.StartupProbe = mapProbe(healthCheckConfig.StartupProbe)
 	}
 
 	return mappedConfig
+}
+
+func mapProbe(in *common.Probe) *v1.Probe {
+	probeType := ""
+
+	if in.Type == common.ProbeType_PROBE_UNSPECIFIED {
+		probeType = string(v1.HTTPProbe)
+	} else {
+		probeType = strings.ToLower(in.Type.String())
+	}
+
+	return &v1.Probe{
+		Path:    in.Path,
+		Port:    uint16(in.Port), //#nosec G115
+		Type:    v1.ProbeType(probeType),
+		Command: in.Command,
+	}
 }
 
 func mapVolumes(in []*agent.Volume) []v1.Volume {
@@ -306,7 +321,9 @@ func mapVolumes(in []*agent.Volume) []v1.Volume {
 		}
 
 		if in[i].Type != nil {
-			if *in[i].Type == common.VolumeType_MEM || *in[i].Type == common.VolumeType_TMP || *in[i].Type == common.VolumeType_SECRET {
+			if *in[i].Type == common.VolumeType_MEM ||
+				*in[i].Type == common.VolumeType_TMP ||
+				*in[i].Type == common.VolumeType_SECRET {
 				volume.Type = v1.VolumeType(strings.ToLower(in[i].Type.String()))
 			} else {
 				volume.Type = v1.VolumeType(in[i].Type.String())
